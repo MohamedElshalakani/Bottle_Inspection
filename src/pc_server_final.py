@@ -13,8 +13,8 @@ from deep_sort_realtime.deepsort_tracker import DeepSort
 model = YOLO(r"C:\UofCanada\Winter26\2220\Bottle_Inspection\models\best_fold5.pt")
 
 tracker = DeepSort(
-    max_age=20,
-    n_init=4,
+    max_age=3,
+    n_init=2,
     max_cosine_distance=0.3,
     nn_budget=100
 )
@@ -31,7 +31,7 @@ print(f"Pi connected from {addr}")
 
 HEADER = 4
 
-COUNT_STABLE_FRAMES = 3
+COUNT_STABLE_FRAMES = 2
 MAX_EXPECTED_BOTTLES = 3
 
 SINGLE_BOTTLE_PX = 80
