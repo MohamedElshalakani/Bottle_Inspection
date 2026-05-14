@@ -3,8 +3,8 @@ import socket
 import cv2
 import RPi.GPIO as GPIO
 import signal
-import time
 import struct
+import threading
 
 # ── Pin assignments ──────────────────────────────────────────────
 RELAY_CLASSIFY  = 17
@@ -35,7 +35,7 @@ picam2.configure(
 picam2.start()
 
 # ── Socket setup ─────────────────────────────────────────────────
-PC_IP = "192.168.1.7"
+PC_IP = "192.168.1.100"
 PORT  = 5000
 
 s = socket.socket()
@@ -47,10 +47,11 @@ good_count        = 0
 no_cap_count      = 0
 no_label_count    = 0
 
-classify_off_time = None
+classify_off_timer = None
+relay_lock = threading.Lock()
 
 current_count     = 0
-last_processed_id = -1
+processed_ids     = set()
 
 running = True
 
@@ -141,6 +142,20 @@ def log_classify_relay(state, result):
     )
 
 
+def _relay_off():
+    global classify_off_timer
+
+    with relay_lock:
+        GPIO.output(RELAY_CLASSIFY, RELAY_OFF)
+
+        log_classify_relay(
+            RELAY_OFF,
+            "pulse ended"
+        )
+
+        classify_off_timer = None
+
+
 # ── Graceful shutdown ────────────────────────────────────────────
 def stop(sig, frame):
     global running
@@ -160,21 +175,6 @@ print("=" * 60)
 
 # ── Main loop ────────────────────────────────────────────────────
 while running:
-
-    # Turn OFF reject relay after pulse duration
-    if (
-        classify_off_time
-        and time.time() >= classify_off_time
-    ):
-
-        GPIO.output(RELAY_CLASSIFY, RELAY_OFF)
-
-        log_classify_relay(
-            RELAY_OFF,
-            "pulse ended"
-        )
-
-        classify_off_time = None
 
     # Receive next command
     try:
@@ -199,6 +199,7 @@ while running:
 
         try:
             count = int(cmd.split(":")[1])
+            count = min(count, 3)
 
         except Exception as e:
             print(f"[ERROR] COUNT parse failed: {e}")
@@ -234,10 +235,10 @@ while running:
             continue
 
         # Prevent duplicate processing
-        if bottle_id == last_processed_id:
+        if bottle_id in processed_ids:
             continue
 
-        last_processed_id = bottle_id
+        processed_ids.add(bottle_id)
 
         print(f"\n{'─'*60}")
         print(f"  Bottle #{bottle_id} → {result}")
@@ -248,15 +249,20 @@ while running:
 
             good_count += 1
 
-            GPIO.output(
-                RELAY_CLASSIFY,
-                RELAY_OFF
-            )
+            if classify_off_timer is not None:
+                classify_off_timer.cancel()
+                classify_off_timer = None
 
-            log_classify_relay(
-                RELAY_OFF,
-                result
-            )
+            with relay_lock:
+                GPIO.output(
+                    RELAY_CLASSIFY,
+                    RELAY_OFF
+                )
+
+                log_classify_relay(
+                    RELAY_OFF,
+                    result
+                )
 
         # DEFECT bottle
         elif result in ("No_cap", "No_label"):
@@ -266,19 +272,25 @@ while running:
             else:
                 no_label_count += 1
 
-            GPIO.output(
-                RELAY_CLASSIFY,
-                RELAY_ON
-            )
+            if classify_off_timer is not None:
+                classify_off_timer.cancel()
 
-            classify_off_time = (
-                time.time() + REJECT_PULSE_SEC
-            )
+            with relay_lock:
+                GPIO.output(
+                    RELAY_CLASSIFY,
+                    RELAY_ON
+                )
 
-            log_classify_relay(
-                RELAY_ON,
-                result
+                log_classify_relay(
+                    RELAY_ON,
+                    result
+                )
+
+            classify_off_timer = threading.Timer(
+                REJECT_PULSE_SEC,
+                _relay_off
             )
+            classify_off_timer.start()
 
         # Running totals
         print(
@@ -300,9 +312,13 @@ while running:
 # ── Cleanup ──────────────────────────────────────────────────────
 print("\nShutting down — all relays OFF")
 
-GPIO.output(RELAY_CLASSIFY, RELAY_OFF)
-GPIO.output(RELAY_COUNT_MSB, RELAY_OFF)
-GPIO.output(RELAY_COUNT_LSB, RELAY_OFF)
+if classify_off_timer is not None:
+    classify_off_timer.cancel()
+
+with relay_lock:
+    GPIO.output(RELAY_CLASSIFY, RELAY_OFF)
+    GPIO.output(RELAY_COUNT_MSB, RELAY_OFF)
+    GPIO.output(RELAY_COUNT_LSB, RELAY_OFF)
 
 GPIO.cleanup()
 
