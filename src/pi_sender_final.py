@@ -92,6 +92,7 @@ def send_msg(sock, text):
 def send_frame(sock):
 
     frame = picam2.capture_array()
+    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
     # Lower JPEG quality slightly for faster transfer
     encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 75]
